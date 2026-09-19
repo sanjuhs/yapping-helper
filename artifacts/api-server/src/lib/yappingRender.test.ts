@@ -2,16 +2,13 @@ import assert from "node:assert/strict";
 import { access, readFile } from "node:fs/promises";
 import test from "node:test";
 import {
-  describeExecFailure,
-  ffmpegThreadCount,
-  hdrToneMapFilter,
-  isExecOomOrKill,
   montageDuration,
+  hdrVideoFilter,
   musicAsset,
   musicMixFilter,
   normalizeEditOptions,
   segmentVideoFilter,
-  shouldRetryRenderWithoutHdr,
+  segmentInputArgs,
 } from "./yappingRender";
 
 test("normalizes edit options and safely defaults older jobs", () => {
@@ -30,6 +27,24 @@ test("normalizes edit options and safely defaults older jobs", () => {
   });
 });
 
+test("builds independently seeked, duration-bounded source inputs", () => {
+  assert.deepEqual(segmentInputArgs("/video.mov", {
+    start: 54.560001373291016,
+    end: 63.2599983215332,
+  }), ["-ss", "54.560001", "-t", "8.699997", "-i", "/video.mov"]);
+  assert.deepEqual(segmentInputArgs("/video.mov", {
+    start: 38.119998931884766,
+    end: 44.13999938964844,
+  }), ["-ss", "38.119999", "-t", "6.020000", "-i", "/video.mov"]);
+});
+
+test("downscales HDR in zscale before tonemapping on a fixed caption canvas", () => {
+  const filter = hdrVideoFilter(0, "punchy");
+  assert.ok(filter.indexOf("zscale=w=") < filter.indexOf("tonemap="));
+  assert.match(filter, /crop=1080:1920/);
+  assert.match(filter, /eq=contrast=1\.035:saturation=1\.06/);
+});
+
 test("builds duration-preserving punch and ducked music filters", () => {
   assert.equal(montageDuration({
     title: "", hook: "", reason: "",
@@ -38,40 +53,11 @@ test("builds duration-preserving punch and ducked music filters", () => {
   assert.match(segmentVideoFilter(0, "punchy"), /eq=contrast=1\.035:saturation=1\.06/);
   assert.notEqual(segmentVideoFilter(0, "punchy"), segmentVideoFilter(1, "punchy"));
   assert.doesNotMatch(segmentVideoFilter(0, "none"), /eq=/);
-  assert.match(segmentVideoFilter(0, "none"), /force_divisible_by=2/);
   const mix = musicMixFilter(3.5, 0.1);
   assert.match(mix, /sidechaincompress=/);
   assert.match(mix, /amix=inputs=2:duration=first:normalize=0/);
   assert.match(mix, /atrim=duration=3\.500/);
   assert.match(mix, /afade=t=out:st=3\.150:d=0\.35/);
-});
-
-test("downscales to portrait before HDR float conversion", () => {
-  const hdr = segmentVideoFilter(0, "none", true);
-  const scaleAt = hdr.indexOf("scale=1080:1920");
-  const zscaleAt = hdr.indexOf("zscale=");
-  assert.ok(scaleAt >= 0 && zscaleAt > scaleAt);
-  assert.match(hdr, new RegExp(hdrToneMapFilter().replace(/[.*+?^${}()|[\]\\]/g, "\\$&")));
-  assert.doesNotMatch(segmentVideoFilter(0, "none", false), /zscale=/);
-});
-
-test("caps FFmpeg at two threads and explains host kills without dumping the command", () => {
-  assert.equal(ffmpegThreadCount(1), 1);
-  assert.equal(ffmpegThreadCount(8), 2);
-  assert.equal(isExecOomOrKill({ killed: true, signal: "SIGKILL", code: 137 }), true);
-  assert.equal(shouldRetryRenderWithoutHdr({ stderr: "No such filter: 'zscale'" }), true);
-  assert.equal(shouldRetryRenderWithoutHdr({ stderr: "No such file or directory" }), false);
-  const message = describeExecFailure({
-    killed: true,
-    signal: "SIGKILL",
-    message: "Command failed: /home/runner/workspace/node_modules/.pnpm/ffmpeg-static@5.3.0/ffmpeg ...",
-  });
-  assert.match(message, /Reserved VM/);
-  assert.doesNotMatch(message, /Command failed/);
-  assert.match(
-    describeExecFailure({ stderr: "Invalid too big or non positive size for width '1080'" }),
-    /1080/,
-  );
 });
 
 test("ships deterministic stereo PCM music loops", async () => {

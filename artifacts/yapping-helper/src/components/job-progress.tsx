@@ -1,11 +1,12 @@
-import { useDeleteJob, useGetJob, useRegenerateJob, getGetJobQueryKey, JobStatus } from '@workspace/api-client-react';
+import { useDeleteJob, useGetJob, useRegenerateJob } from '@workspace/api-client-react';
+import { JobStatus, getGetJobQueryKey } from '@workspace/api-client-react';
+import { useQueryClient } from '@tanstack/react-query';
 import { Progress } from '@/components/ui/progress';
 import { CheckCircle2, Circle, Loader2, Sparkles, AlertCircle, Trash2, RefreshCw } from 'lucide-react';
 import { cn } from '@/lib/utils';
-import { useEffect } from 'react';
+import { useEffect, useState } from 'react';
 import { Button } from '@/components/ui/button';
 import { useToast } from '@/hooks/use-toast';
-import { useQueryClient } from '@tanstack/react-query';
 import {
   AlertDialog,
   AlertDialogAction,
@@ -32,11 +33,55 @@ const STEPS = [
   { id: 'COMPLETE', label: 'COMPLETE' }
 ];
 
+function formatElapsed(createdAt: string, now: number) {
+  const startedAt = Date.parse(createdAt);
+  if (!Number.isFinite(startedAt)) return null;
+
+  const totalSeconds = Math.max(0, Math.floor((now - startedAt) / 1000));
+  const hours = Math.floor(totalSeconds / 3600);
+  const minutes = Math.floor((totalSeconds % 3600) / 60);
+  const seconds = totalSeconds % 60;
+
+  return hours > 0
+    ? `${hours}h ${minutes}m ${seconds}s`
+    : `${minutes}m ${seconds}s`;
+}
+
+function safeProcessingError(error?: string | null) {
+  const normalized = error?.toLowerCase() ?? '';
+
+  if (normalized.includes('timed out') || normalized.includes('timeout')) {
+    return 'Video rendering timed out before it could finish. Retry processing to try again.';
+  }
+
+  if (normalized.includes('command failed') || normalized.includes('ffmpeg')) {
+    return 'Video rendering failed. Retry processing to try again.';
+  }
+
+  return 'Processing failed before your clips could be created. Retry processing to try again.';
+}
+
+function stageExplanation(status: JobStatus) {
+  switch (status) {
+    case JobStatus.UPLOADED:
+      return 'Preparing the uploaded video for processing.';
+    case JobStatus.TRANSCRIBING:
+      return 'Turning the video audio into a transcript.';
+    case JobStatus.ANALYZING:
+      return 'Finding the strongest moments for your clips.';
+    case JobStatus.RENDERING:
+      return 'Rendering the selected clips. Longer source videos can take several minutes.';
+    default:
+      return null;
+  }
+}
+
 export function JobProgress({ jobId, onComplete, onDeleted }: JobProgressProps) {
   const deleteJob = useDeleteJob();
   const regenerateJob = useRegenerateJob();
   const queryClient = useQueryClient();
   const { toast } = useToast();
+  const [now, setNow] = useState(() => Date.now());
   const { data: job, isError, error } = useGetJob(jobId, {
     query: {
       refetchInterval: (query) => {
@@ -50,6 +95,11 @@ export function JobProgress({ jobId, onComplete, onDeleted }: JobProgressProps) 
       queryKey: getGetJobQueryKey(jobId),
     }
   });
+
+  useEffect(() => {
+    const interval = window.setInterval(() => setNow(Date.now()), 1000);
+    return () => window.clearInterval(interval);
+  }, []);
 
   useEffect(() => {
     if (job?.status === JobStatus.COMPLETE) {
@@ -86,6 +136,33 @@ export function JobProgress({ jobId, onComplete, onDeleted }: JobProgressProps) 
   }
 
   if (job.status === JobStatus.FAILED) {
+    const elapsed = formatElapsed(job.createdAt, now);
+
+    const handleRetry = () => {
+      if (regenerateJob.isPending) return;
+
+      regenerateJob.mutate(
+        { jobId },
+        {
+          onSuccess: (updatedJob) => {
+            queryClient.setQueryData(getGetJobQueryKey(jobId), updatedJob);
+            void queryClient.invalidateQueries({ queryKey: getGetJobQueryKey(jobId) });
+            toast({
+              title: 'Processing restarted',
+              description: 'Your existing upload is being processed again.',
+            });
+          },
+          onError: (retryError) => {
+            toast({
+              title: 'Could not restart processing',
+              description: safeProcessingError(retryError.message),
+              variant: 'destructive',
+            });
+          },
+        },
+      );
+    };
+
     return (
       <div className="w-full max-w-2xl mx-auto text-center space-y-6 animate-in fade-in">
         <div className="w-20 h-20 bg-destructive/10 rounded-full flex items-center justify-center mx-auto text-destructive">
@@ -93,44 +170,37 @@ export function JobProgress({ jobId, onComplete, onDeleted }: JobProgressProps) 
         </div>
         <div>
           <h2 className="text-2xl font-bold">Processing Failed</h2>
-          <p className="text-muted-foreground mt-2 text-sm text-left whitespace-pre-wrap break-words max-h-48 overflow-auto">
-            {job.error || "An error occurred during processing. Please try again."}
+          <p className="text-muted-foreground mt-2 font-mono" data-testid="text-processing-error">
+            {safeProcessingError(job.error)}
           </p>
+          {elapsed && (
+            <p className="text-sm text-muted-foreground mt-2" data-testid="text-processing-elapsed">
+              Elapsed time: {elapsed}
+            </p>
+          )}
         </div>
-        <div className="flex flex-wrap justify-center gap-3">
+        <div className="flex flex-wrap items-center justify-center gap-3">
           <Button
-            variant="default"
             className="font-bold"
-            disabled={regenerateJob.isPending}
-            onClick={() => regenerateJob.mutate(
-              { jobId },
-              {
-                onSuccess: (updatedJob) => {
-                  queryClient.setQueryData(getGetJobQueryKey(jobId), updatedJob);
-                  void queryClient.invalidateQueries({ queryKey: getGetJobQueryKey(jobId) });
-                  toast({
-                    title: 'Retry started',
-                    description: 'The same transcript will be reused when it is still valid.',
-                  });
-                },
-                onError: (retryError) => toast({
-                  title: 'Failed to retry',
-                  description: retryError.message || 'The job could not be queued again.',
-                  variant: 'destructive',
-                }),
-              },
-            )}
+            onClick={handleRetry}
+            disabled={regenerateJob.isPending || deleteJob.isPending}
+            data-testid="button-retry-processing"
           >
             {regenerateJob.isPending ? (
               <Loader2 className="w-4 h-4 mr-2 animate-spin" />
             ) : (
               <RefreshCw className="w-4 h-4 mr-2" />
             )}
-            {regenerateJob.isPending ? 'Retrying…' : 'Retry processing'}
+            {regenerateJob.isPending ? 'Restarting…' : 'Retry processing'}
           </Button>
           <AlertDialog>
             <AlertDialogTrigger asChild>
-              <Button variant="destructive" className="font-bold">
+              <Button
+                variant="destructive"
+                className="font-bold"
+                disabled={regenerateJob.isPending}
+                data-testid="button-delete-failed-job"
+              >
                 <Trash2 className="w-4 h-4 mr-2" />
                 Delete failed job
               </Button>
@@ -144,10 +214,11 @@ export function JobProgress({ jobId, onComplete, onDeleted }: JobProgressProps) 
                 </AlertDialogDescription>
               </AlertDialogHeader>
               <AlertDialogFooter>
-                <AlertDialogCancel>Cancel</AlertDialogCancel>
+                <AlertDialogCancel data-testid="button-cancel-delete">Cancel</AlertDialogCancel>
                 <AlertDialogAction
                   disabled={deleteJob.isPending}
                   className="bg-destructive text-destructive-foreground hover:bg-destructive/90"
+                  data-testid="button-confirm-delete"
                   onClick={() => deleteJob.mutate(
                     { jobId },
                     {
@@ -175,6 +246,8 @@ export function JobProgress({ jobId, onComplete, onDeleted }: JobProgressProps) 
 
   const displayStatus = job.status;
   const currentStepIndex = STEPS.findIndex(s => s.id === displayStatus);
+  const elapsed = formatElapsed(job.createdAt, now);
+  const explanation = stageExplanation(displayStatus);
   
   return (
     <div className="w-full max-w-2xl mx-auto space-y-12 animate-in fade-in">
@@ -190,13 +263,23 @@ export function JobProgress({ jobId, onComplete, onDeleted }: JobProgressProps) 
         <p className="text-muted-foreground font-mono">
           {job.currentStep || "Processing your masterpiece..."}
         </p>
+        {explanation && (
+          <p className="text-sm text-muted-foreground" data-testid="text-stage-explanation">
+            {explanation}
+          </p>
+        )}
+        {elapsed && (
+          <p className="text-sm font-mono text-muted-foreground" data-testid="text-processing-elapsed">
+            Elapsed time: {elapsed}
+          </p>
+        )}
       </div>
 
       <div className="bg-card border-2 border-border p-8 rounded-lg shadow-xl">
         <div className="mb-8">
           <div className="flex justify-between mb-2">
             <span className="font-bold text-sm">Overall Progress</span>
-            <span className="font-mono text-sm font-bold text-primary">{Math.round(job.progress)}%</span>
+            <span className="font-mono text-sm font-bold text-primary" data-testid="text-progress-percent">{Math.round(job.progress)}%</span>
           </div>
           <Progress value={job.progress} className="h-3" />
         </div>

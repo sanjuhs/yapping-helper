@@ -1,11 +1,14 @@
 # Changes
 
-## Replit Autoscale / FFmpeg render failures
+## Rendering reliability fix
 
-- Pointed `.replit` at a Reserved VM (`gce`) instead of Autoscale. In-process FFmpeg cannot survive Cloud Run CPU freeze, scale-to-zero, or 512 MB–1 GB machines.
-- Scale and crop to 1080×1920 *before* HDR float tone-mapping so 4K sources do not expand into `gbrpf32le` at full resolution.
-- Use a single FFmpeg filter thread, retry without tone-mapping after an OOM or missing `zscale`, and re-queue interrupted jobs on API startup.
-- Stop showing the raw FFmpeg command as the user-facing error. Failed jobs now get a short explanation and a retry button.
+- Seek directly to each selected source range instead of decoding the whole source through shared trim branches.
+- Resize HDR frames before expensive floating-point tone mapping while preserving 1080×1920 output.
+- Bound looped music to the montage duration.
+- Report live FFmpeg progress and detect stalled encoding.
+- Stop even slowly advancing encoders at a hard deadline: three minutes for outputs up to 30 seconds, proportionally longer for longer outputs. This bounds rendering time, not upload/AI time or guaranteed completion.
+- Display concise errors instead of internal FFmpeg commands.
+- Add Retry processing for failed jobs without requiring another upload.
 
 ## Hackathon documentation
 

@@ -1,10 +1,8 @@
-modules = ["nodejs-24", "python-base-3.13"]
+modules = ["nodejs-24", "python-base-3.13", "postgresql-16"]
 
 [deployment]
 router = "application"
-# Autoscale (Cloud Run) only guarantees CPU during HTTP requests and can OOM
-# in-process FFmpeg. This app must stay on a Reserved VM that never sleeps.
-deploymentTarget = "gce"
+deploymentTarget = "autoscale"
 
 [deployment.postBuild]
 args = ["pnpm", "store", "prune"]
