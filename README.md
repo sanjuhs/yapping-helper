@@ -159,7 +159,7 @@ Versions below are resolved in the committed lockfile, rather than just broad de
 | Media processing | `ffmpeg-static` **5.3.0**, `ffprobe-static` **3.1.0** | Probe, trim, concat, tone-map, caption, mix, encode |
 | File storage | Replit App Storage, `@google-cloud/storage` **8.2.0** | Signed uploads and stored media |
 | Logging/build | Pino **9.14.0**, esbuild | API logs and production server bundle |
-| Hosting | Replit artifact routing and publishing | Frontend at `/`, API at `/api` |
+| Hosting | Replit artifact routing and publishing | Frontend at `/`, API at `/api`. **Reserved VM required** (not Autoscale) |
 
 ## Repository map
 
@@ -224,6 +224,8 @@ pnpm --filter @workspace/api-spec run codegen
 
 Production settings live in each artifact's `.replit-artifact/artifact.toml`. The API build copies fonts and music into its output. Keep packaged FFmpeg/FFprobe dependencies available in production; a development machine's system binaries are not enough.
 
+**Published hosting must be a Reserved VM, not Autoscale.** Clip rendering runs in-process with FFmpeg. Autoscale (Cloud Run) can freeze CPU between HTTP requests, scale the worker to zero, and OOM HDR encodes. `.replit` is set to `deploymentTarget = "gce"`. After pulling this change, open Replit Publish → Adjust settings, choose **Reserved VM**, pick at least **1 vCPU / 2 GB RAM** (2 vCPU / 4 GB is safer for HDR iPhone footage), and republish.
+
 ## Verification performed
 
 During implementation, API/frontend type checks and production builds passed, along with CSV and renderer-helper unit tests. A **14.72-second enhanced clip from real HDR MOV footage** passed playback, seeking, MP4/SRT/ASS downloads, reload, CSV export, and full FFmpeg decode.
@@ -234,7 +236,8 @@ This is implementation evidence—not a complete security audit or a claim that 
 
 - **No end-user sign-in or job ownership checks yet.** Anyone who obtains a job ID/link may be able to access or modify that job. Do not upload confidential footage, and do not treat random IDs as authentication.
 - **No per-user rate limiting or usage quotas yet.** A public instance needs abuse and cost controls before broad use.
-- **The render queue is in process memory.** It handles jobs serially; restart/crash recovery and durable distributed workers are not implemented in this snapshot. Cached transcripts help normal retries, not recovery of a lost queue.
+- **The render queue is in process memory.** It handles jobs serially; restart/crash recovery and durable distributed workers are not implemented in this snapshot. Cached transcripts help normal retries, not recovery of a lost queue. Incomplete jobs are re-queued when the API process starts.
+- **Do not publish on Replit Autoscale.** Autoscale is request-scoped and too small for HDR FFmpeg. Use a Reserved VM.
 - Sources longer than **20 minutes** are rejected. Clip count and duration remain constrained by available distinct spoken material.
 - Video analysis is **transcript-driven**; the model does not visually inspect every frame. Framing uses crops rather than face tracking.
 - AI-selected highlights and metadata are suggestions. Review them for context and accuracy before posting.

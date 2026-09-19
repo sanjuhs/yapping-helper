@@ -1,11 +1,11 @@
-import { useDeleteJob, useGetJob } from '@workspace/api-client-react';
-import { JobStatus, getGetJobQueryKey } from '@workspace/api-client-react';
+import { useDeleteJob, useGetJob, useRegenerateJob, getGetJobQueryKey, JobStatus } from '@workspace/api-client-react';
 import { Progress } from '@/components/ui/progress';
-import { CheckCircle2, Circle, Loader2, Sparkles, AlertCircle, Trash2 } from 'lucide-react';
+import { CheckCircle2, Circle, Loader2, Sparkles, AlertCircle, Trash2, RefreshCw } from 'lucide-react';
 import { cn } from '@/lib/utils';
 import { useEffect } from 'react';
 import { Button } from '@/components/ui/button';
 import { useToast } from '@/hooks/use-toast';
+import { useQueryClient } from '@tanstack/react-query';
 import {
   AlertDialog,
   AlertDialogAction,
@@ -34,6 +34,8 @@ const STEPS = [
 
 export function JobProgress({ jobId, onComplete, onDeleted }: JobProgressProps) {
   const deleteJob = useDeleteJob();
+  const regenerateJob = useRegenerateJob();
+  const queryClient = useQueryClient();
   const { toast } = useToast();
   const { data: job, isError, error } = useGetJob(jobId, {
     query: {
@@ -91,50 +93,82 @@ export function JobProgress({ jobId, onComplete, onDeleted }: JobProgressProps) 
         </div>
         <div>
           <h2 className="text-2xl font-bold">Processing Failed</h2>
-          <p className="text-muted-foreground mt-2 font-mono">
+          <p className="text-muted-foreground mt-2 text-sm text-left whitespace-pre-wrap break-words max-h-48 overflow-auto">
             {job.error || "An error occurred during processing. Please try again."}
           </p>
         </div>
-        <AlertDialog>
-          <AlertDialogTrigger asChild>
-            <Button variant="destructive" className="font-bold">
-              <Trash2 className="w-4 h-4 mr-2" />
-              Delete failed job
-            </Button>
-          </AlertDialogTrigger>
-          <AlertDialogContent>
-            <AlertDialogHeader>
-              <AlertDialogTitle>Permanently delete this job?</AlertDialogTitle>
-              <AlertDialogDescription>
-                This permanently deletes the original upload, all generated MP4, SRT, and ASS
-                outputs, and the transcript. This cannot be undone.
-              </AlertDialogDescription>
-            </AlertDialogHeader>
-            <AlertDialogFooter>
-              <AlertDialogCancel>Cancel</AlertDialogCancel>
-              <AlertDialogAction
-                disabled={deleteJob.isPending}
-                className="bg-destructive text-destructive-foreground hover:bg-destructive/90"
-                onClick={() => deleteJob.mutate(
-                  { jobId },
-                  {
-                    onSuccess: () => {
-                      toast({ title: 'Job permanently deleted' });
-                      onDeleted();
+        <div className="flex flex-wrap justify-center gap-3">
+          <Button
+            variant="default"
+            className="font-bold"
+            disabled={regenerateJob.isPending}
+            onClick={() => regenerateJob.mutate(
+              { jobId },
+              {
+                onSuccess: (updatedJob) => {
+                  queryClient.setQueryData(getGetJobQueryKey(jobId), updatedJob);
+                  void queryClient.invalidateQueries({ queryKey: getGetJobQueryKey(jobId) });
+                  toast({
+                    title: 'Retry started',
+                    description: 'The same transcript will be reused when it is still valid.',
+                  });
+                },
+                onError: (retryError) => toast({
+                  title: 'Failed to retry',
+                  description: retryError.message || 'The job could not be queued again.',
+                  variant: 'destructive',
+                }),
+              },
+            )}
+          >
+            {regenerateJob.isPending ? (
+              <Loader2 className="w-4 h-4 mr-2 animate-spin" />
+            ) : (
+              <RefreshCw className="w-4 h-4 mr-2" />
+            )}
+            {regenerateJob.isPending ? 'Retrying…' : 'Retry processing'}
+          </Button>
+          <AlertDialog>
+            <AlertDialogTrigger asChild>
+              <Button variant="destructive" className="font-bold">
+                <Trash2 className="w-4 h-4 mr-2" />
+                Delete failed job
+              </Button>
+            </AlertDialogTrigger>
+            <AlertDialogContent>
+              <AlertDialogHeader>
+                <AlertDialogTitle>Permanently delete this job?</AlertDialogTitle>
+                <AlertDialogDescription>
+                  This permanently deletes the original upload, all generated MP4, SRT, and ASS
+                  outputs, and the transcript. This cannot be undone.
+                </AlertDialogDescription>
+              </AlertDialogHeader>
+              <AlertDialogFooter>
+                <AlertDialogCancel>Cancel</AlertDialogCancel>
+                <AlertDialogAction
+                  disabled={deleteJob.isPending}
+                  className="bg-destructive text-destructive-foreground hover:bg-destructive/90"
+                  onClick={() => deleteJob.mutate(
+                    { jobId },
+                    {
+                      onSuccess: () => {
+                        toast({ title: 'Job permanently deleted' });
+                        onDeleted();
+                      },
+                      onError: (deleteError) => toast({
+                        title: 'Failed to delete job',
+                        description: deleteError.message || 'The job and its files could not be deleted.',
+                        variant: 'destructive',
+                      }),
                     },
-                    onError: (deleteError) => toast({
-                      title: 'Failed to delete job',
-                      description: deleteError.message || 'The job and its files could not be deleted.',
-                      variant: 'destructive',
-                    }),
-                  },
-                )}
-              >
-                {deleteJob.isPending ? 'Deleting…' : 'Delete everything'}
-              </AlertDialogAction>
-            </AlertDialogFooter>
-          </AlertDialogContent>
-        </AlertDialog>
+                  )}
+                >
+                  {deleteJob.isPending ? 'Deleting…' : 'Delete everything'}
+                </AlertDialogAction>
+              </AlertDialogFooter>
+            </AlertDialogContent>
+          </AlertDialog>
+        </div>
       </div>
     );
   }

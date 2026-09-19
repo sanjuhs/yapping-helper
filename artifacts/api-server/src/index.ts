@@ -1,7 +1,7 @@
 import { setMaxListeners } from "node:events";
 import app from "./app";
 import { logger } from "./lib/logger";
-import { cleanupExpiredSources } from "./lib/yappingProcessor";
+import { cleanupExpiredSources, resumeInterruptedJobs } from "./lib/yappingProcessor";
 
 // App Storage bridges Google Cloud PassThrough streams to Web Streams and can
 // legitimately attach more than Node's default ten listeners during a request.
@@ -30,6 +30,7 @@ app.listen(port, (err) => {
   }
 
   logger.info({ port }, "Server listening");
+  void resumeInterruptedJobs();
   void cleanupExpiredSources();
   setInterval(() => void cleanupExpiredSources(), 6 * 60 * 60 * 1000);
 });

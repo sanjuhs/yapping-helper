@@ -31,11 +31,14 @@ import {
 import { ObjectStorageService } from "./objectStorage";
 import {
   type EditOptions,
+  describeExecFailure,
+  ffmpegThreadCount,
   montageDuration,
   musicAsset,
   musicMixFilter,
   normalizeEditOptions,
   segmentVideoFilter,
+  shouldRetryRenderWithoutHdr,
 } from "./yappingRender";
 
 const exec = promisify(execFile);
@@ -80,6 +83,16 @@ export function queueJobProcessing(jobId: string, _regenerate = false): void {
   active.add(jobId);
   pending.push(jobId);
   void drainQueue();
+}
+
+export async function resumeInterruptedJobs(): Promise<void> {
+  const jobs = await db.select({ id: yappingJobsTable.id, status: yappingJobsTable.status })
+    .from(yappingJobsTable)
+    .where(inArray(yappingJobsTable.status, ["UPLOADED", "TRANSCRIBING", "ANALYZING", "RENDERING"]));
+  for (const job of jobs) {
+    logger.info({ jobId: job.id, status: job.status }, "Re-queueing interrupted job");
+    queueJobProcessing(job.id);
+  }
 }
 
 async function drainQueue(): Promise<void> {
@@ -278,10 +291,14 @@ async function transcribe(
   editOptions: EditOptions,
 ): Promise<Transcription> {
   const audio = path.join(dir, "speech.mp3");
-  await exec(ffmpeg, [
-    "-hide_banner", "-loglevel", "error", "-nostdin", "-y", "-i", source,
-    "-vn", "-ac", "1", "-ar", "16000", "-c:a", "libmp3lame", "-b:a", "48k", audio,
-  ], { timeout: 180_000, killSignal: "SIGKILL", maxBuffer: 2 * 1024 * 1024 });
+  try {
+    await exec(ffmpeg, [
+      "-hide_banner", "-loglevel", "error", "-nostdin", "-y", "-i", source,
+      "-vn", "-ac", "1", "-ar", "16000", "-c:a", "libmp3lame", "-b:a", "48k", audio,
+    ], { timeout: 180_000, killSignal: "SIGKILL", maxBuffer: 2 * 1024 * 1024 });
+  } catch (err) {
+    throw new Error(describeExecFailure(err));
+  }
 
   const client = new OpenAI({ apiKey: process.env.OPENAI_API_KEY, timeout: 180_000, maxRetries: 2 });
   const response = await client.audio.transcriptions.create({
@@ -421,47 +438,65 @@ export async function renderMontage(
   editOptions: EditOptions = normalizeEditOptions(undefined),
 ): Promise<void> {
   const hdr = ["arib-std-b67", "smpte2084"].includes(video.color_transfer ?? "");
-  const toneMap = hdr
-    ? "zscale=t=linear:npl=100,format=gbrpf32le,tonemap=tonemap=hable:desat=0,zscale=p=bt709:t=bt709:m=bt709:r=limited,"
-    : "";
   const options = normalizeEditOptions(editOptions);
   const duration = montageDuration(choice);
   const music = musicAsset(options.music);
-  const filters: string[] = [];
-  choice.segments.forEach((segment, index) => {
+  const threads = String(ffmpegThreadCount(os.availableParallelism?.() ?? os.cpus().length));
+
+  const run = async (applyHdr: boolean): Promise<void> => {
+    const filters: string[] = [];
+    choice.segments.forEach((segment, index) => {
+      filters.push(
+        `[0:v]trim=start=${segment.start}:end=${segment.end},setpts=PTS-STARTPTS,` +
+        `${segmentVideoFilter(index, options.effects, applyHdr)}[v${index}]`,
+      );
+      filters.push(
+        `[0:a]atrim=start=${segment.start}:end=${segment.end},asetpts=PTS-STARTPTS[a${index}]`,
+      );
+    });
+    const inputs = choice.segments.map((_, index) => `[v${index}][a${index}]`).join("");
+    const escapedAss = escapeFilterPath(assFile);
+    const escapedFonts = escapeFilterPath(fontsDir);
+    filters.push(`${inputs}concat=n=${choice.segments.length}:v=1:a=1[vcat][aout]`);
     filters.push(
-      `[0:v]trim=start=${segment.start}:end=${segment.end},setpts=PTS-STARTPTS,${toneMap}` +
-       `${segmentVideoFilter(index, options.effects)}[v${index}]`,
+      `[vcat]ass=filename='${escapedAss}':fontsdir='${escapedFonts}'[vout]`,
     );
-    filters.push(
-      `[0:a]atrim=start=${segment.start}:end=${segment.end},asetpts=PTS-STARTPTS[a${index}]`,
+    if (music) filters.push(musicMixFilter(duration, options.musicVolume));
+    const args = [
+      "-hide_banner", "-loglevel", "error", "-nostdin", "-y", "-threads", threads, "-i", source,
+    ];
+    if (music) args.push("-stream_loop", "-1", "-i", music);
+    args.push(
+      // Keep filter graph single-threaded so HDR float frames are not duplicated in RAM.
+      "-filter_threads", "1", "-filter_complex_threads", "1",
+      "-filter_complex", filters.join(";"),
+      "-map", "[vout]", "-map", music ? "[afinal]" : "[aout]", "-sn", "-dn",
+      "-c:v", "libx264", "-preset", "veryfast", "-crf", "23", "-threads", threads,
+      "-r", "30", "-pix_fmt", "yuv420p",
+      "-color_primaries", "bt709", "-color_trc", "bt709", "-colorspace", "bt709",
+      "-c:a", "aac", "-b:a", "128k", "-ac", "2",
+      "-t", duration.toFixed(3), "-map_metadata", "-1", "-movflags", "+faststart", output,
     );
-  });
-  const inputs = choice.segments.map((_, index) => `[v${index}][a${index}]`).join("");
-  const escapedAss = escapeFilterPath(assFile);
-  const escapedFonts = escapeFilterPath(fontsDir);
-  filters.push(`${inputs}concat=n=${choice.segments.length}:v=1:a=1[vcat][aout]`);
-  filters.push(
-    `[vcat]ass=filename='${escapedAss}':fontsdir='${escapedFonts}'[vout]`,
-  );
-  if (music) filters.push(musicMixFilter(duration, options.musicVolume));
-  const args = [
-    "-hide_banner", "-loglevel", "error", "-nostdin", "-y", "-threads", "2", "-i", source,
-  ];
-  if (music) args.push("-stream_loop", "-1", "-i", music);
-  args.push(
-    "-filter_threads", "2", "-filter_complex_threads", "2",
-    "-filter_complex", filters.join(";"),
-    "-map", "[vout]", "-map", music ? "[afinal]" : "[aout]", "-sn", "-dn",
-    "-c:v", "libx264", "-preset", "veryfast", "-crf", "23", "-threads", "2",
-    "-r", "30", "-pix_fmt", "yuv420p",
-    "-color_primaries", "bt709", "-color_trc", "bt709", "-colorspace", "bt709",
-    "-c:a", "aac", "-b:a", "128k", "-ac", "2",
-    "-t", duration.toFixed(3), "-map_metadata", "-1", "-movflags", "+faststart", output,
-  );
-  await exec(ffmpeg, args, {
-    timeout: 12 * 60_000, killSignal: "SIGKILL", maxBuffer: 4 * 1024 * 1024,
-  });
+    await exec(ffmpeg, args, {
+      timeout: 12 * 60_000, killSignal: "SIGKILL", maxBuffer: 4 * 1024 * 1024,
+    });
+  };
+
+  try {
+    await run(hdr);
+  } catch (err) {
+    if (hdr && shouldRetryRenderWithoutHdr(err)) {
+      logger.warn({ err }, "HDR or memory-heavy render failed; retrying without tone-mapping");
+      try {
+        await run(false);
+        return;
+      } catch (retryErr) {
+        logger.error({ err: retryErr }, "Render retry without HDR also failed");
+        throw new Error(describeExecFailure(retryErr));
+      }
+    }
+    throw new Error(describeExecFailure(err));
+  }
 }
 
 async function probe(file: string): Promise<Media> {

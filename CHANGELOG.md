@@ -1,5 +1,12 @@
 # Changes
 
+## Replit Autoscale / FFmpeg render failures
+
+- Pointed `.replit` at a Reserved VM (`gce`) instead of Autoscale. In-process FFmpeg cannot survive Cloud Run CPU freeze, scale-to-zero, or 512 MB–1 GB machines.
+- Scale and crop to 1080×1920 *before* HDR float tone-mapping so 4K sources do not expand into `gbrpf32le` at full resolution.
+- Use a single FFmpeg filter thread, retry without tone-mapping after an OOM or missing `zscale`, and re-queue interrupted jobs on API startup.
+- Stop showing the raw FFmpeg command as the user-facing error. Failed jobs now get a short explanation and a retry button.
+
 ## Hackathon documentation
 
 - Expanded the README with the resolved technology stack, exact AI models and API calls, and a pipeline diagram.
