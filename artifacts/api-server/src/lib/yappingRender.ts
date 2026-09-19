@@ -1,3 +1,4 @@
+import { existsSync } from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import type { MontageChoice } from "./montage";
@@ -16,7 +17,9 @@ export const DEFAULT_EDIT_OPTIONS: EditOptions = {
   musicVolume: 0.10,
 };
 
-const musicDir = fileURLToPath(new URL("./music", import.meta.url));
+const bundledMusicDir = fileURLToPath(new URL("./music", import.meta.url));
+const sourceMusicDir = fileURLToPath(new URL("../../assets/music", import.meta.url));
+const musicDir = existsSync(bundledMusicDir) ? bundledMusicDir : sourceMusicDir;
 
 export function normalizeEditOptions(value: unknown): EditOptions {
   if (!value || typeof value !== "object" || Array.isArray(value)) {
