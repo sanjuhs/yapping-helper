@@ -1,0 +1,433 @@
+openapi: 3.1.0
+info:
+  # Do not change the title, if the title changes, the import paths will be broken
+  title: Api
+  version: 0.1.0
+  description: API specification
+servers:
+  - url: /api
+    description: Base API path
+tags:
+  - name: health
+    description: Health operations
+  - name: jobs
+    description: Video clipping jobs
+  - name: storage
+    description: App Storage upload helpers
+paths:
+  /healthz:
+    get:
+      operationId: healthCheck
+      tags: [health]
+      summary: Health check
+      description: Returns server health status
+      responses:
+        "200":
+          description: Healthy
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/HealthStatus"
+  /jobs:
+    post:
+      operationId: createJob
+      tags: [jobs]
+      summary: Upload a video and start clip generation
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/JobInput"
+      responses:
+        "202":
+          description: Processing job created
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Job"
+        "400":
+          description: Invalid upload or settings
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+  /storage/uploads/request-url:
+    post:
+      operationId: requestUploadUrl
+      tags: [storage]
+      summary: Request a presigned App Storage upload URL
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/UploadRequest"
+      responses:
+        "200":
+          description: Presigned upload URL
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/UploadResponse"
+        "400":
+          description: Invalid file metadata
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+  /jobs/{jobId}:
+    get:
+      operationId: getJob
+      tags: [jobs]
+      summary: Get processing status and generated clips
+      parameters:
+        - $ref: "#/components/parameters/JobId"
+      responses:
+        "200":
+          description: Processing job
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Job"
+        "404":
+          description: Job not found
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+    delete:
+      operationId: deleteJob
+      tags: [jobs]
+      summary: Permanently delete a completed or failed job and all of its files
+      parameters:
+        - $ref: "#/components/parameters/JobId"
+      responses:
+        "204":
+          description: Job and files deleted
+        "404":
+          description: Job not found
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "409":
+          description: Active jobs cannot be deleted
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+  /jobs/{jobId}/regenerate:
+    post:
+      operationId: regenerateJob
+      tags: [jobs]
+      summary: Ask for a fresh set of clips
+      parameters:
+        - $ref: "#/components/parameters/JobId"
+      responses:
+        "202":
+          description: Regeneration started
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Job"
+        "404":
+          description: Job not found
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+  /jobs/{jobId}/clips/{clipId}/download:
+    get:
+      operationId: downloadClip
+      tags: [jobs]
+      summary: Download a generated clip
+      parameters:
+        - $ref: "#/components/parameters/JobId"
+        - $ref: "#/components/parameters/ClipId"
+      responses:
+        "200":
+          description: Generated MP4 clip
+          content:
+            video/mp4:
+              schema:
+                type: string
+                format: binary
+        "404":
+          description: Clip not found
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+  /jobs/{jobId}/clips/{clipId}/subtitles:
+    get:
+      operationId: downloadClipSubtitles
+      tags: [jobs]
+      summary: Download generated SRT subtitles for a clip
+      parameters:
+        - $ref: "#/components/parameters/JobId"
+        - $ref: "#/components/parameters/ClipId"
+      responses:
+        "200":
+          description: Generated SRT subtitle file
+          content:
+            application/x-subrip:
+              schema:
+                type: string
+                format: binary
+        "404":
+          description: Clip or subtitles not found
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+  /jobs/{jobId}/clips/{clipId}/styled-subtitles:
+    get:
+      operationId: downloadClipStyledSubtitles
+      tags: [jobs]
+      summary: Download generated styled ASS subtitles for a clip
+      parameters:
+        - $ref: "#/components/parameters/JobId"
+        - $ref: "#/components/parameters/ClipId"
+      responses:
+        "200":
+          description: Generated ASS subtitle file
+          content:
+            text/x-ssa:
+              schema:
+                type: string
+                format: binary
+        "404":
+          description: Clip or styled subtitles not found
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+components:
+  parameters:
+    JobId:
+      name: jobId
+      in: path
+      required: true
+      schema:
+        type: string
+    ClipId:
+      name: clipId
+      in: path
+      required: true
+      schema:
+        type: string
+  schemas:
+    HealthStatus:
+      type: object
+      properties:
+        status:
+          type: string
+      required:
+        - status
+    JobInput:
+      type: object
+      required:
+        - objectPath
+        - originalFilename
+        - clipCount
+        - clipLength
+        - style
+      properties:
+        objectPath:
+          type: string
+        originalFilename:
+          type: string
+        clipCount:
+          type: integer
+          minimum: 1
+          maximum: 10
+        clipLength:
+          type: string
+          enum: [short, medium, long]
+        style:
+          type: string
+          enum: [auto, educational, punchy, storytelling, interesting, opinionated]
+        editOptions:
+          $ref: "#/components/schemas/EditOptions"
+    EditOptions:
+      type: object
+      properties:
+        music:
+          type: string
+          enum: [off, upbeat, chill]
+          default: off
+        effects:
+          type: string
+          enum: [none, punchy]
+          default: none
+        musicVolume:
+          type: number
+          minimum: 0
+          maximum: 0.25
+          default: 0.10
+    UploadRequest:
+      type: object
+      required:
+        - name
+        - size
+        - contentType
+      properties:
+        name:
+          type: string
+          minLength: 1
+        size:
+          type: integer
+          minimum: 1
+        contentType:
+          type: string
+          minLength: 1
+    UploadResponse:
+      type: object
+      required:
+        - uploadURL
+        - objectPath
+      properties:
+        uploadURL:
+          type: string
+          format: uri
+        objectPath:
+          type: string
+        metadata:
+          type: object
+          required:
+            - name
+            - size
+            - contentType
+          properties:
+            name:
+              type: string
+            size:
+              type: integer
+            contentType:
+              type: string
+    Job:
+      type: object
+      required:
+        - id
+        - filename
+        - status
+        - progress
+        - currentStep
+        - requestedClips
+        - clips
+        - createdAt
+      properties:
+        id:
+          type: string
+        filename:
+          type: string
+        status:
+          type: string
+          enum: [UPLOADED, TRANSCRIBING, ANALYZING, RENDERING, COMPLETE, FAILED]
+        progress:
+          type: integer
+          minimum: 0
+          maximum: 100
+        currentStep:
+          type: string
+        requestedClips:
+          type: integer
+        clipLength:
+          type: string
+          enum: [short, medium, long]
+        style:
+          type: string
+          enum: [auto, educational, punchy, storytelling, interesting, opinionated]
+        editOptions:
+          $ref: "#/components/schemas/EditOptions"
+        error:
+          type: ["string", "null"]
+        createdAt:
+          type: string
+          format: date-time
+        clips:
+          type: array
+          items:
+            $ref: "#/components/schemas/Clip"
+        transcription:
+          $ref: "#/components/schemas/Transcription"
+    Transcription:
+      type: object
+      required:
+        - text
+        - segments
+      properties:
+        text:
+          type: string
+        segments:
+          type: array
+          items:
+            $ref: "#/components/schemas/TranscriptSegment"
+    TranscriptSegment:
+      type: object
+      required:
+        - start
+        - end
+        - text
+      properties:
+        start:
+          type: number
+        end:
+          type: number
+        text:
+          type: string
+    SourceSegment:
+      type: object
+      required:
+        - start
+        - end
+      properties:
+        start:
+          type: number
+        end:
+          type: number
+    Clip:
+      type: object
+      required:
+        - id
+        - index
+        - title
+        - hook
+        - reason
+        - duration
+        - downloadUrl
+        - previewUrl
+      properties:
+        id:
+          type: string
+        index:
+          type: integer
+        title:
+          type: string
+        hook:
+          type: string
+        reason:
+          type: string
+        duration:
+          type: number
+        downloadUrl:
+          type: string
+        previewUrl:
+          type: string
+        sourceSegments:
+          type: array
+          items:
+            $ref: "#/components/schemas/SourceSegment"
+        subtitleUrl:
+          type: string
+        styledSubtitleUrl:
+          type: string
+    Error:
+      type: object
+      required:
+        - error
+      properties:
+        error:
+          type: string
+

@@ -1,0 +1,28 @@
+kind = "web"
+previewPath = "/"
+title = "Yapping Helper"
+description = "A simple talking-head video repurposing app that turns one long upload into multiple short, captioned vertical clips ready to preview and download."
+version = "1.0.0"
+id = "artifacts/yapping-helper"
+router = "path"
+
+[[services]]
+name = "web"
+paths = [ "/" ]
+localPort = 20200
+
+[services.development]
+run = "pnpm --filter @workspace/yapping-helper run dev"
+
+[services.production]
+build = [ "pnpm", "--filter", "@workspace/yapping-helper", "run", "build" ]
+serve = "static"
+publicDir = "artifacts/yapping-helper/dist/public"
+
+[[services.production.rewrites]]
+from = "/*"
+to = "/index.html"
+
+[services.env]
+PORT = "20200"
+BASE_PATH = "/"
