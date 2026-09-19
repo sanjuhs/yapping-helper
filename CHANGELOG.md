@@ -1,5 +1,15 @@
 # Changes
 
+## Rendering reliability fix
+
+- Seek directly to each selected source range instead of decoding the whole source through shared trim branches.
+- Resize HDR frames before expensive floating-point tone mapping while preserving 1080×1920 output.
+- Bound looped music to the montage duration.
+- Report live FFmpeg progress and detect stalled encoding.
+- Stop even slowly advancing encoders at a hard deadline: three minutes for outputs up to 30 seconds, proportionally longer for longer outputs. This bounds rendering time, not upload/AI time or guaranteed completion.
+- Display concise errors instead of internal FFmpeg commands.
+- Add Retry processing for failed jobs without requiring another upload.
+
 ## Hackathon documentation
 
 - Expanded the README with the resolved technology stack, exact AI models and API calls, and a pipeline diagram.

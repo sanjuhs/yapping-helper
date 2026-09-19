@@ -3,10 +3,12 @@ import { access, readFile } from "node:fs/promises";
 import test from "node:test";
 import {
   montageDuration,
+  hdrVideoFilter,
   musicAsset,
   musicMixFilter,
   normalizeEditOptions,
   segmentVideoFilter,
+  segmentInputArgs,
 } from "./yappingRender";
 
 test("normalizes edit options and safely defaults older jobs", () => {
@@ -23,6 +25,24 @@ test("normalizes edit options and safely defaults older jobs", () => {
   }), {
     music: "off", effects: "none", musicVolume: 0,
   });
+});
+
+test("builds independently seeked, duration-bounded source inputs", () => {
+  assert.deepEqual(segmentInputArgs("/video.mov", {
+    start: 54.560001373291016,
+    end: 63.2599983215332,
+  }), ["-ss", "54.560001", "-t", "8.699997", "-i", "/video.mov"]);
+  assert.deepEqual(segmentInputArgs("/video.mov", {
+    start: 38.119998931884766,
+    end: 44.13999938964844,
+  }), ["-ss", "38.119999", "-t", "6.020000", "-i", "/video.mov"]);
+});
+
+test("downscales HDR in zscale before tonemapping on a fixed caption canvas", () => {
+  const filter = hdrVideoFilter(0, "punchy");
+  assert.ok(filter.indexOf("zscale=w=") < filter.indexOf("tonemap="));
+  assert.match(filter, /crop=1080:1920/);
+  assert.match(filter, /eq=contrast=1\.035:saturation=1\.06/);
 });
 
 test("builds duration-preserving punch and ducked music filters", () => {

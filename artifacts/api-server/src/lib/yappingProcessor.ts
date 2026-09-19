@@ -31,12 +31,15 @@ import {
 import { ObjectStorageService } from "./objectStorage";
 import {
   type EditOptions,
+  hdrVideoFilter,
   montageDuration,
   musicAsset,
   musicMixFilter,
   normalizeEditOptions,
+  segmentInputArgs,
   segmentVideoFilter,
 } from "./yappingRender";
+import { runFfmpeg, type FfmpegProgress } from "./yappingFfmpeg";
 
 const exec = promisify(execFile);
 const require = createRequire(import.meta.url);
@@ -200,7 +203,31 @@ async function processJob(jobId: string): Promise<void> {
       }
       await writeFile(srtFile, toSrt(captions), "utf8");
       await writeFile(assFile, toAss(captions, job.style), "utf8");
-       await renderMontage(source, output, assFile, choice, video, transcription.editOptions);
+      let loggedRenderBucket = -1;
+      await renderMontage(
+        source,
+        output,
+        assFile,
+        choice,
+        video,
+        transcription.editOptions,
+        async ({ ratio, renderedSeconds }) => {
+          const progress = 48 + Math.floor(((i + ratio) / choices.length) * 40);
+          await setJob(jobId, {
+            status: "RENDERING",
+            progress,
+            currentStep: `Rendering montage ${i + 1} of ${choices.length} (${Math.floor(ratio * 100)}%)`,
+          });
+          const bucket = Math.floor(ratio * 10);
+          if (bucket > loggedRenderBucket) {
+            loggedRenderBucket = bucket;
+            logger.info(
+              { jobId, montage: i + 1, progress: Math.floor(ratio * 100), renderedSeconds },
+              "FFmpeg render progress",
+            );
+          }
+        },
+      );
       const rendered = await probe(output);
       const renderedDuration = Number(rendered.format.duration);
       const expected = choice.segments.reduce((sum, range) => sum + range.end - range.start, 0);
@@ -419,22 +446,22 @@ export async function renderMontage(
   choice: MontageChoice,
   video: Media["streams"][number],
   editOptions: EditOptions = normalizeEditOptions(undefined),
+  onProgress?: (progress: FfmpegProgress) => void | Promise<void>,
 ): Promise<void> {
   const hdr = ["arib-std-b67", "smpte2084"].includes(video.color_transfer ?? "");
-  const toneMap = hdr
-    ? "zscale=t=linear:npl=100,format=gbrpf32le,tonemap=tonemap=hable:desat=0,zscale=p=bt709:t=bt709:m=bt709:r=limited,"
-    : "";
   const options = normalizeEditOptions(editOptions);
   const duration = montageDuration(choice);
   const music = musicAsset(options.music);
   const filters: string[] = [];
   choice.segments.forEach((segment, index) => {
+    const segmentDuration = (segment.end - segment.start).toFixed(6);
     filters.push(
-      `[0:v]trim=start=${segment.start}:end=${segment.end},setpts=PTS-STARTPTS,${toneMap}` +
-       `${segmentVideoFilter(index, options.effects)}[v${index}]`,
+      `[${index}:v:0]trim=duration=${segmentDuration},setpts=PTS-STARTPTS,` +
+      `${hdr ? hdrVideoFilter(index, options.effects) : segmentVideoFilter(index, options.effects)}` +
+      `[v${index}]`,
     );
     filters.push(
-      `[0:a]atrim=start=${segment.start}:end=${segment.end},asetpts=PTS-STARTPTS[a${index}]`,
+      `[${index}:a:0]atrim=duration=${segmentDuration},asetpts=PTS-STARTPTS[a${index}]`,
     );
   });
   const inputs = choice.segments.map((_, index) => `[v${index}][a${index}]`).join("");
@@ -444,11 +471,14 @@ export async function renderMontage(
   filters.push(
     `[vcat]ass=filename='${escapedAss}':fontsdir='${escapedFonts}'[vout]`,
   );
-  if (music) filters.push(musicMixFilter(duration, options.musicVolume));
+  if (music) filters.push(musicMixFilter(duration, options.musicVolume, choice.segments.length));
   const args = [
-    "-hide_banner", "-loglevel", "error", "-nostdin", "-y", "-threads", "2", "-i", source,
+    "-hide_banner", "-loglevel", "error", "-nostdin", "-y", "-threads", "2",
   ];
-  if (music) args.push("-stream_loop", "-1", "-i", music);
+  for (const segment of choice.segments) args.push(...segmentInputArgs(source, segment));
+  if (music) {
+    args.push("-stream_loop", "-1", "-t", duration.toFixed(6), "-i", music);
+  }
   args.push(
     "-filter_threads", "2", "-filter_complex_threads", "2",
     "-filter_complex", filters.join(";"),
@@ -459,9 +489,7 @@ export async function renderMontage(
     "-c:a", "aac", "-b:a", "128k", "-ac", "2",
     "-t", duration.toFixed(3), "-map_metadata", "-1", "-movflags", "+faststart", output,
   );
-  await exec(ffmpeg, args, {
-    timeout: 12 * 60_000, killSignal: "SIGKILL", maxBuffer: 4 * 1024 * 1024,
-  });
+  await runFfmpeg(ffmpeg, args, { durationSeconds: duration, onProgress });
 }
 
 async function probe(file: string): Promise<Media> {

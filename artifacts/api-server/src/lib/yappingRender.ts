@@ -54,12 +54,40 @@ export function segmentVideoFilter(index: number, effects: EffectsChoice): strin
     "eq=contrast=1.035:saturation=1.06,setsar=1,format=yuv420p";
 }
 
-export function musicMixFilter(duration: number, volume: number): string {
+export function hdrVideoFilter(index: number, effects: EffectsChoice): string {
+  // Resize while zscale converts the transfer function to linear light. This
+  // avoids tonemapping every source pixel, without resizing nonlinear HDR data
+  // or changing the final 1080x1920 crop/caption canvas.
+  const resizeAndToneMap =
+    "zscale=w='if(gt(iw/ih,0.5625),-2,1080)':" +
+    "h='if(gt(iw/ih,0.5625),1920,-2)':t=linear:npl=100," +
+    "format=gbrpf32le,tonemap=tonemap=hable:desat=0," +
+    "zscale=p=bt709:t=bt709:m=bt709:r=limited,crop=1080:1920";
+  if (effects === "none") return `${resizeAndToneMap},setsar=1,format=yuv420p`;
+  const zoom = index % 2 ? "1118:1988" : "1102:1960";
+  const x = index % 2 ? "(in_w-out_w)*0.70" : "(in_w-out_w)*0.30";
+  return `${resizeAndToneMap},scale=${zoom},crop=1080:1920:x=${x}:y=(in_h-out_h)/2,` +
+    "eq=contrast=1.035:saturation=1.06,setsar=1,format=yuv420p";
+}
+
+export function segmentInputArgs(
+  source: string,
+  segment: { start: number; end: number },
+): string[] {
+  const duration = segment.end - segment.start;
+  return [
+    "-ss", segment.start.toFixed(6),
+    "-t", duration.toFixed(6),
+    "-i", source,
+  ];
+}
+
+export function musicMixFilter(duration: number, volume: number, musicInput = 1): string {
   const fadeStart = Math.max(0, duration - 0.35).toFixed(3);
   const end = duration.toFixed(3);
   return [
     "[aout]asplit=2[voice][duckkey]",
-    `[1:a]volume=${volume.toFixed(4)}[musicquiet]`,
+    `[${musicInput}:a]volume=${volume.toFixed(4)}[musicquiet]`,
     "[musicquiet][duckkey]sidechaincompress=threshold=0.020:ratio=8:" +
       "attack=15:release=350:makeup=1[ducked]",
     `[voice][ducked]amix=inputs=2:duration=first:normalize=0,` +
