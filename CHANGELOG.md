@@ -1,5 +1,12 @@
 # Changes
 
+## Hackathon documentation
+
+- Expanded the README with the resolved technology stack, exact AI models and API calls, and a pipeline diagram.
+- Distinguished the current AI-guided workflow from autonomous tool-calling or multi-agent systems.
+- Documented setup, verification, current security/reliability limitations, and proposed integrations.
+- Added a demo-video section awaiting the walkthrough recording.
+
 ## Latest version — background music, effects, and exports
 
 ### Added
